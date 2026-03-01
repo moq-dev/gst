@@ -19,10 +19,10 @@ path = "src/lib.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Using local path dependencies from moq-dev
-hang = "0.9.0"
-moq-lite = "0.10.1"
-moq-native = "0.10.1"
+hang = "0.14.0"
+moq-mux = "0.2.1"
+moq-lite = "0.14.0"
+moq-native = "0.13.1"
 
 anyhow = { version = "1", features = ["backtrace"] }
 bytes = "1"

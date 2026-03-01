@@ -3,8 +3,6 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use hang::moq_lite;
-
 use once_cell::sync::Lazy;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -158,44 +156,40 @@ impl ElementImpl for MoqSrc {
 
 impl MoqSrc {
 	async fn setup(&self) -> anyhow::Result<()> {
-		let (client, url, name) = {
+		let (client, url, name, origin_consumer) = {
 			let settings = self.settings.lock().unwrap();
 			let url = url::Url::parse(settings.url.as_ref().expect("url is required"))?;
 			let name = settings.broadcast.as_ref().expect("broadcast is required").clone();
 
-			// TODO support TLS certs and other options
-			let client = moq_native::ClientConfig {
-				tls: moq_native::ClientTls {
-					disable_verify: Some(settings.tls_disable_verify),
-					..Default::default()
-				},
-				..Default::default()
-			}
-			.init()?;
+			let mut config = moq_native::ClientConfig::default();
+			config.tls.disable_verify = Some(settings.tls_disable_verify);
 
-			(client, url, name)
+			let origin = moq_lite::Origin::produce();
+			let origin_consumer = origin.consume();
+
+			let client = config.init()?.with_consume(origin);
+
+			(client, url, name, origin_consumer)
 		};
 
-		let session = client.connect(url).await?;
-		let origin = moq_lite::Origin::produce();
-		let _session = moq_lite::Session::connect(session, None, origin.producer).await?;
+		let _session = client.connect(url).await?;
 
-		let broadcast = origin
-			.consumer
+		let broadcast = origin_consumer
 			.consume_broadcast(&name)
 			.ok_or_else(|| anyhow::anyhow!("Broadcast '{}' not found", name))?;
 
-		let catalog = broadcast.subscribe_track(&hang::catalog::Catalog::default_track());
-		let mut catalog = hang::catalog::CatalogConsumer::new(catalog);
+		let catalog = broadcast.subscribe_track(&hang::Catalog::default_track());
+		let mut catalog = hang::CatalogConsumer::new(catalog);
 
 		// TODO handle catalog updates
 		let catalog = catalog.next().await?.context("no catalog found")?.clone();
 
-		if let Some(video) = catalog.video {
-			for (track_name, config) in video.renditions {
-				let track_ref = hang::moq_lite::Track::new(&track_name);
+		{
+			for (track_name, config) in catalog.video.renditions {
+				let track_ref = moq_lite::Track::new(&track_name);
+				let track_consumer = broadcast.subscribe_track(&track_ref);
 				let mut track =
-					hang::TrackConsumer::new(broadcast.subscribe_track(&track_ref), std::time::Duration::from_secs(1));
+					hang::container::OrderedConsumer::new(track_consumer, std::time::Duration::from_secs(1));
 
 				let caps = match config.codec {
 					hang::catalog::VideoCodec::H264(_) => {
@@ -240,7 +234,7 @@ impl MoqSrc {
 				let mut reference = None;
 				tokio::spawn(async move {
 					loop {
-						match track.read_frame().await {
+						match track.read().await {
 							Ok(Some(frame)) => {
 								let payload: Vec<u8> = frame.payload.into_iter().flatten().collect();
 								let mut buffer = gst::Buffer::from_slice(payload);
@@ -286,11 +280,12 @@ impl MoqSrc {
 			}
 		}
 
-		if let Some(audio) = catalog.audio {
-			for (track_name, config) in audio.renditions {
-				let track_ref = hang::moq_lite::Track::new(&track_name);
+		{
+			for (track_name, config) in catalog.audio.renditions {
+				let track_ref = moq_lite::Track::new(&track_name);
+				let track_consumer = broadcast.subscribe_track(&track_ref);
 				let mut track =
-					hang::TrackConsumer::new(broadcast.subscribe_track(&track_ref), std::time::Duration::from_secs(1));
+					hang::container::OrderedConsumer::new(track_consumer, std::time::Duration::from_secs(1));
 
 				let caps = match &config.codec {
 					hang::catalog::AudioCodec::AAC(_aac) => {
@@ -349,7 +344,7 @@ impl MoqSrc {
 				let mut reference = None;
 				tokio::spawn(async move {
 					loop {
-						match track.read_frame().await {
+						match track.read().await {
 							Ok(Some(frame)) => {
 								let payload: Vec<u8> = frame.payload.into_iter().flatten().collect();
 								let mut buffer = gst::Buffer::from_slice(payload);

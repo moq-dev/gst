@@ -5,8 +5,6 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::subclass::prelude::*;
 
-use hang::moq_lite;
-
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -29,7 +27,7 @@ struct Settings {
 
 #[derive(Default)]
 struct State {
-	pub media: Option<hang::import::Fmp4>,
+	pub media: Option<moq_mux::import::Fmp4>,
 	pub buffer: BytesMut,
 }
 
@@ -170,31 +168,27 @@ impl MoqSink {
 
 		let url = settings.url.as_ref().expect("url is required");
 		let url = Url::parse(url).context("invalid URL")?;
+		let name = settings.broadcast.as_ref().expect("broadcast is required").clone();
 
-		// TODO support TLS certs and other options
-		let client = moq_native::ClientConfig {
-			tls: moq_native::ClientTls {
-				disable_verify: Some(settings.tls_disable_verify),
-				..Default::default()
-			},
-			..Default::default()
-		}
-		.init()?;
+		let mut config = moq_native::ClientConfig::default();
+		config.tls.disable_verify = Some(settings.tls_disable_verify);
 
-		RUNTIME.block_on(async move {
-			let session = client.connect(url.clone()).await.expect("failed to connect");
+		drop(settings);
 
-			let origin = moq_lite::Origin::produce();
-			let broadcast = moq_lite::Broadcast::produce();
+		let origin = moq_lite::Origin::produce();
+		let mut broadcast = moq_lite::Broadcast::produce();
+		let broadcast_consumer = broadcast.consume();
+		let catalog_track = broadcast.create_track(hang::Catalog::default_track());
+		let catalog = hang::CatalogProducer::new(catalog_track, Default::default());
 
-			let name = settings.broadcast.as_ref().expect("broadcast is required");
-			origin.producer.publish_broadcast(name, broadcast.consumer);
+		origin.publish_broadcast(&name, broadcast_consumer);
 
-			let _session = moq_lite::Session::connect(session, origin.consumer, None)
-				.await
-				.expect("failed to connect");
+		let client = config.init()?.with_publish(origin.consume());
 
-			let media = hang::import::Fmp4::new(broadcast.producer.into());
+		RUNTIME.block_on(async {
+			let _session = client.connect(url).await.expect("failed to connect");
+
+			let media = moq_mux::import::Fmp4::new(broadcast, catalog, Default::default());
 
 			let mut state = self.state.lock().unwrap();
 			state.media = Some(media);
