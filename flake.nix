@@ -52,9 +52,9 @@
             gst_all_1.gstreamer
           ];
 
-          gstPluginPath = nixpkgs.lib.makeSearchPath "lib/gstreamer-1.0" gstreamerSearch + ":" + nixpkgs.lib.makeLibraryPath gstreamerLib;
+          gstPluginPath = nixpkgs.lib.makeSearchPath "lib/gstreamer-1.0" gstreamerSearch;
         in {
-          devShell = pkgs.mkShell {
+          devShells.default = pkgs.mkShell {
             packages = shell-deps;
 
             env = {
@@ -75,6 +75,8 @@
                 src = craneLib.cleanCargoSource ./.;
                 nativeBuildInputs = with pkgs; [
                   pkg-config
+                ];
+                buildInputs = with pkgs; [
                   glib
                   glib.dev
                   gst_all_1.gstreamer.dev
