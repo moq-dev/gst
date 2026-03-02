@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a GStreamer plugin for Media over QUIC (MoQ), written in Rust. It provides `hangsink` and `hangsrc` elements that enable publishing and subscribing to media streams using the MoQ protocol over QUIC transport. The project has been renamed from moq-gst to hang-gst and uses the updated hang/moq-lite dependencies.
+This is a GStreamer plugin for Media over QUIC (MoQ), written in Rust. It provides `hangsink` and `hangsrc` elements that enable publishing and subscribing to media streams using the MoQ protocol over QUIC transport.
 
 ## Development Setup
 
@@ -68,8 +68,10 @@ just sub bbb
   - `imp.rs`: Core implementation with async Tokio runtime
 
 ### Key Dependencies
-- **hang**: Higher-level hang protocol utilities and CMAF handling (local path dependency)
-- **moq-native**: Core MoQ protocol implementation with QUIC/TLS (local path dependency)
+- **hang**: Higher-level hang protocol utilities and CMAF handling
+- **moq-mux**: MoQ muxing/demuxing for media streams
+- **moq-lite**: Lightweight MoQ protocol types
+- **moq-native**: Core MoQ protocol implementation with QUIC/TLS
 - **gstreamer**: GStreamer bindings for Rust
 - **tokio**: Async runtime (single-threaded worker pool)
 
@@ -88,5 +90,4 @@ Both elements use a shared Tokio runtime and support TLS configuration options. 
 - Renamed from moq-gst to hang-gst
 - Element names changed from moqsink/moqsrc to hangsink/hangsrc
 - Added broadcast parameter requirement for both elements
-- Updated dependencies to use local hang and moq-native packages
 - Updated justfile commands to include broadcast parameters

@@ -3,16 +3,13 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use hang::moq_lite;
-
-use once_cell::sync::Lazy;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-static CAT: Lazy<gst::DebugCategory> =
-	Lazy::new(|| gst::DebugCategory::new("moq-src", gst::DebugColorFlags::empty(), Some("MoQ Source Element")));
+static CAT: LazyLock<gst::DebugCategory> =
+	LazyLock::new(|| gst::DebugCategory::new("moq-src", gst::DebugColorFlags::empty(), Some("MoQ Source Element")));
 
-pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 	tokio::runtime::Builder::new_multi_thread()
 		.enable_all()
 		.worker_threads(1)
@@ -30,6 +27,8 @@ struct Settings {
 #[derive(Default)]
 pub struct MoqSrc {
 	settings: Mutex<Settings>,
+	session: Mutex<Option<moq_lite::Session>>,
+	tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 #[glib::object_subclass]
@@ -48,7 +47,7 @@ impl BinImpl for MoqSrc {}
 
 impl ObjectImpl for MoqSrc {
 	fn properties() -> &'static [glib::ParamSpec] {
-		static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+		static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
 			vec![
 				glib::ParamSpecString::builder("url")
 					.nick("Source URL")
@@ -93,7 +92,7 @@ impl ObjectImpl for MoqSrc {
 
 impl ElementImpl for MoqSrc {
 	fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-		static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+		static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
 			gst::subclass::ElementMetadata::new(
 				"MoQ Src",
 				"Source/Network/MoQ",
@@ -158,44 +157,41 @@ impl ElementImpl for MoqSrc {
 
 impl MoqSrc {
 	async fn setup(&self) -> anyhow::Result<()> {
-		let (client, url, name) = {
+		let (client, url, name, origin_consumer) = {
 			let settings = self.settings.lock().unwrap();
 			let url = url::Url::parse(settings.url.as_ref().expect("url is required"))?;
 			let name = settings.broadcast.as_ref().expect("broadcast is required").clone();
 
-			// TODO support TLS certs and other options
-			let client = moq_native::ClientConfig {
-				tls: moq_native::ClientTls {
-					disable_verify: Some(settings.tls_disable_verify),
-					..Default::default()
-				},
-				..Default::default()
-			}
-			.init()?;
+			let mut config = moq_native::ClientConfig::default();
+			config.tls.disable_verify = Some(settings.tls_disable_verify);
 
-			(client, url, name)
+			let origin = moq_lite::Origin::produce();
+			let origin_consumer = origin.consume();
+
+			let client = config.init()?.with_consume(origin);
+
+			(client, url, name, origin_consumer)
 		};
 
 		let session = client.connect(url).await?;
-		let origin = moq_lite::Origin::produce();
-		let _session = moq_lite::Session::connect(session, None, origin.producer).await?;
+		*self.session.lock().unwrap() = Some(session);
 
-		let broadcast = origin
-			.consumer
+		let broadcast = origin_consumer
 			.consume_broadcast(&name)
 			.ok_or_else(|| anyhow::anyhow!("Broadcast '{}' not found", name))?;
 
-		let catalog = broadcast.subscribe_track(&hang::catalog::Catalog::default_track());
-		let mut catalog = hang::catalog::CatalogConsumer::new(catalog);
+		let catalog = broadcast.subscribe_track(&hang::Catalog::default_track());
+		let mut catalog = hang::CatalogConsumer::new(catalog);
 
 		// TODO handle catalog updates
 		let catalog = catalog.next().await?.context("no catalog found")?.clone();
 
-		if let Some(video) = catalog.video {
-			for (track_name, config) in video.renditions {
-				let track_ref = hang::moq_lite::Track::new(&track_name);
+		{
+			for (track_name, config) in catalog.video.renditions {
+				let track_ref = moq_lite::Track::new(&track_name);
+				let track_consumer = broadcast.subscribe_track(&track_ref);
 				let mut track =
-					hang::TrackConsumer::new(broadcast.subscribe_track(&track_ref), std::time::Duration::from_secs(1));
+					hang::container::OrderedConsumer::new(track_consumer, std::time::Duration::from_secs(1));
 
 				let caps = match config.codec {
 					hang::catalog::VideoCodec::H264(_) => {
@@ -238,9 +234,9 @@ impl MoqSrc {
 
 				// Push to the srcpad in a background task.
 				let mut reference = None;
-				tokio::spawn(async move {
+				let handle = tokio::spawn(async move {
 					loop {
-						match track.read_frame().await {
+						match track.read().await {
 							Ok(Some(frame)) => {
 								let payload: Vec<u8> = frame.payload.into_iter().flatten().collect();
 								let mut buffer = gst::Buffer::from_slice(payload);
@@ -283,14 +279,16 @@ impl MoqSrc {
 						}
 					}
 				});
+				self.tasks.lock().unwrap().push(handle);
 			}
 		}
 
-		if let Some(audio) = catalog.audio {
-			for (track_name, config) in audio.renditions {
-				let track_ref = hang::moq_lite::Track::new(&track_name);
+		{
+			for (track_name, config) in catalog.audio.renditions {
+				let track_ref = moq_lite::Track::new(&track_name);
+				let track_consumer = broadcast.subscribe_track(&track_ref);
 				let mut track =
-					hang::TrackConsumer::new(broadcast.subscribe_track(&track_ref), std::time::Duration::from_secs(1));
+					hang::container::OrderedConsumer::new(track_consumer, std::time::Duration::from_secs(1));
 
 				let caps = match &config.codec {
 					hang::catalog::AudioCodec::AAC(_aac) => {
@@ -347,9 +345,9 @@ impl MoqSrc {
 
 				// Push to the srcpad in a background task.
 				let mut reference = None;
-				tokio::spawn(async move {
+				let handle = tokio::spawn(async move {
 					loop {
-						match track.read_frame().await {
+						match track.read().await {
 							Ok(Some(frame)) => {
 								let payload: Vec<u8> = frame.payload.into_iter().flatten().collect();
 								let mut buffer = gst::Buffer::from_slice(payload);
@@ -388,6 +386,7 @@ impl MoqSrc {
 						}
 					}
 				});
+				self.tasks.lock().unwrap().push(handle);
 			}
 		}
 
@@ -398,6 +397,9 @@ impl MoqSrc {
 	}
 
 	fn cleanup(&self) {
-		// TODO kill spawned tasks
+		for task in self.tasks.lock().unwrap().drain(..) {
+			task.abort();
+		}
+		*self.session.lock().unwrap() = None;
 	}
 }

@@ -5,14 +5,12 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::subclass::prelude::*;
 
-use hang::moq_lite;
-
-use once_cell::sync::Lazy;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use url::Url;
 
-pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 	tokio::runtime::Builder::new_multi_thread()
 		.enable_all()
 		.worker_threads(1)
@@ -29,7 +27,7 @@ struct Settings {
 
 #[derive(Default)]
 struct State {
-	pub media: Option<hang::import::Fmp4>,
+	pub media: Option<moq_mux::import::Fmp4>,
 	pub buffer: BytesMut,
 }
 
@@ -52,7 +50,7 @@ impl ObjectSubclass for MoqSink {
 
 impl ObjectImpl for MoqSink {
 	fn properties() -> &'static [glib::ParamSpec] {
-		static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+		static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
 			vec![
 				glib::ParamSpecString::builder("url")
 					.nick("Source URL")
@@ -99,7 +97,7 @@ impl GstObjectImpl for MoqSink {}
 
 impl ElementImpl for MoqSink {
 	fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-		static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+		static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
 			gst::subclass::ElementMetadata::new(
 				"MoQ Sink",
 				"Sink/Network/MoQ",
@@ -112,7 +110,7 @@ impl ElementImpl for MoqSink {
 	}
 
 	fn pad_templates() -> &'static [gst::PadTemplate] {
-		static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+		static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
 			let caps = gst::Caps::builder("video/quicktime")
 				.field("variant", "iso-fragmented")
 				.build();
@@ -170,36 +168,32 @@ impl MoqSink {
 
 		let url = settings.url.as_ref().expect("url is required");
 		let url = Url::parse(url).context("invalid URL")?;
+		let name = settings.broadcast.as_ref().expect("broadcast is required").clone();
 
-		// TODO support TLS certs and other options
-		let client = moq_native::ClientConfig {
-			tls: moq_native::ClientTls {
-				disable_verify: Some(settings.tls_disable_verify),
-				..Default::default()
-			},
-			..Default::default()
-		}
-		.init()?;
+		let mut config = moq_native::ClientConfig::default();
+		config.tls.disable_verify = Some(settings.tls_disable_verify);
 
-		RUNTIME.block_on(async move {
-			let session = client.connect(url.clone()).await.expect("failed to connect");
+		drop(settings);
 
-			let origin = moq_lite::Origin::produce();
-			let broadcast = moq_lite::Broadcast::produce();
+		let origin = moq_lite::Origin::produce();
+		let mut broadcast = moq_lite::Broadcast::produce();
+		let broadcast_consumer = broadcast.consume();
+		let catalog_track = broadcast.create_track(hang::Catalog::default_track());
+		let catalog = hang::CatalogProducer::new(catalog_track, Default::default());
 
-			let name = settings.broadcast.as_ref().expect("broadcast is required");
-			origin.producer.publish_broadcast(name, broadcast.consumer);
+		origin.publish_broadcast(&name, broadcast_consumer);
 
-			let _session = moq_lite::Session::connect(session, origin.consumer, None)
-				.await
-				.expect("failed to connect");
+		let client = config.init()?.with_publish(origin.consume());
 
-			let media = hang::import::Fmp4::new(broadcast.producer.into());
+		RUNTIME.block_on(async {
+			let _session = client.connect(url).await.context("failed to connect")?;
+
+			let media = moq_mux::import::Fmp4::new(broadcast, catalog, Default::default());
 
 			let mut state = self.state.lock().unwrap();
 			state.media = Some(media);
-		});
 
-		Ok(())
+			anyhow::Ok(())
+		})
 	}
 }

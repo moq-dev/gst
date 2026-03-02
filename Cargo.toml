@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 
 version = "0.2.2"
 edition = "2021"
+rust-version = "1.80"
 
 keywords = ["quic", "http3", "webtransport", "media", "live"]
 categories = ["multimedia", "network-programming", "web-programming"]
@@ -19,10 +20,10 @@ path = "src/lib.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Using local path dependencies from moq-dev
-hang = "0.9.0"
-moq-lite = "0.10.1"
-moq-native = "0.10.1"
+hang = "0.14.0"
+moq-mux = "0.2.1"
+moq-lite = "0.14.0"
+moq-native = "0.13.1"
 
 anyhow = { version = "1", features = ["backtrace"] }
 bytes = "1"
@@ -30,7 +31,6 @@ gst = { package = "gstreamer", version = "0.23" }
 gst-base = { package = "gstreamer-base", version = "0.23" }
 #gst-app = { package = "gstreamer-app", version = "0.23", features = ["v1_20"] }
 
-once_cell = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
