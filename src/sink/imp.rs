@@ -5,8 +5,8 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::subclass::prelude::*;
 
-use std::sync::LazyLock;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use url::Url;
 
