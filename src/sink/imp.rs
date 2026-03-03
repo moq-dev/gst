@@ -279,7 +279,7 @@ impl MoqSink {
 				let codec_data = structure
 					.get::<gst::Buffer>("codec_data")
 					.context("AAC caps missing codec_data")?;
-				let map = codec_data.map_readable().unwrap();
+				let map = codec_data.map_readable().context("failed to map codec_data buffer")?;
 				let mut data = bytes::Bytes::copy_from_slice(map.as_slice());
 				decoder.initialize(&mut data)?;
 			}

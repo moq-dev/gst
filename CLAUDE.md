@@ -84,4 +84,4 @@ Both elements use a shared Tokio runtime and support TLS configuration options (
 ## Environment Variables
 - `RUST_LOG`: Controls logging level (default: info, overridable via environment)
 - `URL`: Relay server URL (default: http://localhost:4443)
-- `GST_PLUGIN_PATH`: Must include the built plugin directory (handled automatically by justfile)
+- `GST_PLUGIN_PATH_1_0`: Must include the built plugin directory (handled automatically by justfile)
