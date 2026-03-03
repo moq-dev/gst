@@ -25,29 +25,43 @@ setup:
 	# Install cargo shear if needed.
 	cargo binstall --no-confirm cargo-shear
 
-# Download the video and convert it to a fragmented MP4 that we can stream
-download name url:
-	if [ ! -f dev/{{name}}.mp4 ]; then \
-		wget {{url}} -O dev/{{name}}.mp4; \
+# Returns the URL for a test video.
+download-url name:
+	@case {{name}} in \
+		bbb) echo "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" ;; \
+		tos) echo "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4" ;; \
+		av1) echo "http://download.opencontent.netflix.com.s3.amazonaws.com/AV1/Sparks/Sparks-5994fps-AV1-10bit-1920x1080-2194kbps.mp4" ;; \
+		hevc) echo "https://test-videos.co.uk/vids/jellyfish/mp4/h265/1080/Jellyfish_1080_10s_30MB.mp4" ;; \
+		*) echo "unknown: {{name}}" && exit 1 ;; \
+	esac
+
+# Download a test video and convert it to a fragmented MP4.
+download name:
+	@if [ ! -f "dev/{{name}}.mp4" ]; then \
+		curl -fsSL $(just download-url {{name}}) -o "dev/{{name}}.mp4"; \
 	fi
 
-	if [ ! -f dev/{{name}}.fmp4 ]; then \
-		ffmpeg -i dev/{{name}}.mp4 \
+	@if [ ! -f "dev/{{name}}.fmp4" ]; then \
+		ffmpeg -i "dev/{{name}}.mp4" \
 			-c copy \
 			-f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame \
-			dev/{{name}}.fmp4; \
+			"dev/{{name}}.fmp4"; \
 	fi
 
 # Publish a video using gstreamer to the localhost relay server
-pub broadcast: (download "bbb" "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")
+pub broadcast name="bbb":
+	just download "{{name}}"
+
 	# Build the plugins
 	cargo build
 
-	# Run gstreamer and pipe the output to our plugin
+	# Run gstreamer and pipe the output to our plugin.
+	# NOTE: `identity sync=true` throttles to real-time since we're using a file source.
+	# A real livestream source would not need this; you want to publish frames ASAP.
 	GST_PLUGIN_PATH_1_0="${PWD}/target/debug${GST_PLUGIN_PATH_1_0:+:$GST_PLUGIN_PATH_1_0}" \
-	gst-launch-1.0 -v -e multifilesrc location="dev/bbb.fmp4" loop=true ! qtdemux name=demux \
-		demux.video_0 ! h264parse ! queue ! identity sync=true ! mux.video_0 \
-		demux.audio_0 ! aacparse ! queue ! mux.audio_0 \
+	gst-launch-1.0 -v -e multifilesrc location="dev/{{name}}.fmp4" loop=true ! qtdemux name=demux \
+		demux.video_0 ! h264parse config-interval=-1 ! queue ! identity sync=true ! mux.video_0 \
+		demux.audio_0 ! aacparse ! queue ! identity sync=true ! mux.audio_0 \
 		moqsink name=mux url="$URL" broadcast="{{broadcast}}" tls-disable-verify=true
 
 # Subscribe to a video using gstreamer

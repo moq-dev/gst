@@ -28,7 +28,6 @@ struct Settings {
 
 struct PadState {
 	decoder: moq_mux::import::Decoder,
-	reference_pts: Option<gst::ClockTime>,
 }
 
 struct State {
@@ -320,7 +319,6 @@ impl MoqSink {
 			pad_name.clone(),
 			PadState {
 				decoder,
-				reference_pts: None,
 			},
 		);
 
@@ -341,12 +339,9 @@ impl MoqSink {
 			gst::FlowError::Error
 		})?;
 
-		// Compute relative PTS in microseconds
-		let pts = buffer.pts().and_then(|pts| {
-			let reference = *pad_state.reference_pts.get_or_insert(pts);
-			let relative = pts.checked_sub(reference)?;
-			hang::container::Timestamp::from_micros(relative.nseconds() / 1000).ok()
-		});
+		let pts = buffer
+			.pts()
+			.and_then(|pts| hang::container::Timestamp::from_micros(pts.nseconds() / 1000).ok());
 
 		let data = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
 		let mut bytes = bytes::Bytes::copy_from_slice(data.as_slice());
